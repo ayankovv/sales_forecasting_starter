@@ -1,0 +1,332 @@
+---
+title: "App Starter"
+runtime: shiny
+output: 
+  flexdashboard::flex_dashboard:
+    theme: 
+      bg: "#101010"
+      fg: "#FDF7F7" 
+      primary: "#ED79F9"
+      base_font: !expr bslib::font_google("Prompt")
+      code_font: !expr bslib::font_google("JetBrains Mono")
+    orientation: rows
+    vertical_layout: fill
+    social: menu
+    source_code: embed
+---
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+library(flexdashboard)
+
+library(tidyverse)
+library(forecast)
+library(shiny)
+library(shinydashboard)
+library(tidyverse)
+library(plotly)
+library(DT)
+
+
+# historical records from multiple stores
+fsales <- "https://raw.githubusercontent.com/multidis/hult-inter-bus-reports-r/main/forecasting/sales_weekly.csv"
+sales <- read_csv(fsales)
+
+# Get the latest week number
+nweek_now <- max(sales$Week)
+```
+
+
+Forecasting Weekly Sales {data-icon="fa-line-chart"}
+=========================================
+
+Sidebar {.sidebar}
+-------------------------------------
+
+```{r echo = FALSE}
+selectInput("storenum0", label = "Select store: ",
+            choices = 1:max(sales$Store), selected = 1)
+
+sliderInput("horizon0", label = "Forecast horizon (weeks): ",
+            min = 2, max = 52, value = 13, step = 1)
+
+checkboxInput("show_ci", "Show Confidence Intervals", value = TRUE)
+
+fluidRow(column(3,
+         div(style = "margin-bottom: 15px;",
+             actionButton("forecast0", "Generate Forecast")
+         ),
+         div(
+             actionButton("reset_filters", "Reset Filters")
+         )
+  )
+)
+```
+
+```{r}
+
+```
+
+
+Gauges {data-width=200}
+------------------------------------
+
+### Current week performance
+```{r}
+output$current_week_performance <- renderGauge({
+  req(input$forecast0)
+  store <- input$storenum0
+  sales_ts <- ts(sales %>% filter(Store == store) %>% select(Weekly_Sales), frequency = 52)
+  arima_model <- auto.arima(sales_ts, seasonal.test = "seas")
+  arima_pred <- forecast(arima_model, h = 1)
+  
+  current_week_sales <- sales %>% filter(Store == store, Week == nweek_now) %>% select(Weekly_Sales) %>% pull()
+  current_week_forecast <- as.numeric(arima_pred$mean[1])
+  
+  performance <- current_week_sales / current_week_forecast * 100
+  
+  gauge(
+    performance, min = 0, max = 100, symbol = '%',
+    sectors = gaugeSectors(
+      success = c(80, 100),
+      warning = c(20, 80),
+      danger = c(0, 20)
+    )
+  )
+})
+
+gaugeOutput("current_week_performance")
+```
+
+```{r}
+output$performance_explanation <- renderText({
+  "This metric displays the performance percentage for the current week, comparing the actual sales against the forecasted sales."
+})
+
+textOutput("performance_explanation")
+```
+
+### Forecasting Error
+```{r}
+output$forecasting_error <- renderGauge({
+  req(input$forecast0)
+  store <- input$storenum0
+  sales_ts <- ts(sales %>% filter(Store == store) %>% select(Weekly_Sales), frequency = 52)
+  arima_model <- auto.arima(sales_ts, seasonal.test = "seas")
+  arima_pred <- forecast(arima_model, h = 1)
+  
+  current_week_sales <- sales %>% filter(Store == store, Week == nweek_now) %>% select(Weekly_Sales) %>% pull()
+  current_week_forecast <- as.numeric(arima_pred$mean[1])
+  
+  # Calculate the forecasting error as a percentage
+  forecasting_error <- abs(current_week_sales - current_week_forecast) / current_week_forecast * 100
+  
+  gauge(
+    forecasting_error, min = 0, max = 100, symbol = '%',
+    sectors = gaugeSectors(
+      danger = c(80, 100),
+      warning = c(20, 80),
+      success = c(0, 20)
+    )
+  )
+})
+output$forecasting_error_explanation <- renderText({
+  "This metric shows the forecasting error as a percentage. Lower values indicate better forecast accuracy."
+})
+
+gaugeOutput("forecasting_error")
+textOutput("forecasting_error_explanation")
+```
+
+```{r}
+
+```
+
+Interactive Chart {data-width=1000}
+-----------------------------------------
+## Weekly Sales Forecast 
+
+```{r echo = FALSE}
+initial_store <- 1
+initial_horizon <- 13  # Default horizon value (adjust as needed)
+initial_show_ci <- TRUE
+
+# Observing the reset button click
+observeEvent(input$reset_filters, {
+  updateSelectInput(session, "storenum0", selected = initial_store)
+  updateSliderInput(session, "horizon0", value = initial_horizon)
+  updateCheckboxInput(session, "show_ci", value = initial_show_ci)
+})
+
+output$forecast_plot <- renderPlotly({
+  req(input$forecast0)
+  horiz <- input$horizon0
+  store <- input$storenum0
+  
+  # Filter the sales data for the selected store
+  sales_data <- sales %>% filter(Store == store)
+  
+  # Create the time series object
+  sales_ts <- ts(sales_data$Weekly_Sales, frequency = 52)
+  
+  # Fit ARIMA model and make predictions
+  arima_model <- auto.arima(sales_ts, seasonal.test = "seas")
+  arima_pred <- forecast(arima_model, h = horiz)
+  
+  # Convert to a data frame for customized plotting
+  sales_pred <- data.frame(
+    Time = time(arima_pred$mean),
+    Sales_Predicted = as.numeric(arima_pred$mean),
+    Lower_CI = as.numeric(arima_pred$lower[,2]),
+    Upper_CI = as.numeric(arima_pred$upper[,2])
+  )
+  
+  # Add historical data to the plot
+  sales_hist <- data.frame(
+    Time = time(sales_ts),
+    Sales = as.numeric(sales_ts)
+  )
+  
+  # Create the plot
+  p <- ggplot() +
+   geom_line(data = sales_hist, aes(x = Time, y = Sales, color = "Actual"), linewidth = 1) +
+  geom_line(data = sales_pred, aes(x = Time, y = Sales_Predicted, color = "Forecast"), linewidth = 1) +
+  labs(
+      title = "Weekly Sales Forecast",
+      x = "Years",
+      y = "Sales Predicted",
+      color = "Legend"
+    ) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 16, face = "bold", color = "darkblue"),
+      axis.title = element_text(size = 14, face = "bold", color = "darkblue"),
+      axis.text = element_text(size = 12, color = "darkblue"),
+      panel.grid.major = element_line(color = "darkgrey", linewidth = 0.5, linetype = "dashed"),
+      panel.grid.minor = element_blank(),
+      panel.background = element_rect(fill = "white", color = "white"),
+      plot.background = element_rect(fill = "white", color = "white"),
+      legend.position = "bottom",
+      legend.title = element_text(size = 12, face = "bold"),
+      legend.text = element_text(size = 10)
+  ) +
+    scale_color_manual(values = c("Actual" = "darkgray", "Forecast" = "blue")) +
+    scale_y_continuous(labels = scales::comma_format()) # Format y-axis with readable numbers
+  
+  # Add confidence intervals if the option is selected
+  if (input$show_ci) {
+    p <- p + 
+      geom_ribbon(data = sales_pred, aes(x = Time, ymin = Lower_CI, ymax = Upper_CI), fill = "lightblue", alpha = 0.5)
+  }
+  
+  # Render the plot using Plotly
+  ggplotly(p)
+})
+
+# Updated Layout with Text Explanation
+fluidRow(
+  column(width = 8,  # The graph will take up most of the space
+         plotlyOutput("forecast_plot", height = "400px")  # Corrected output reference
+  ),
+  column(width = 4,  # The text explanation on the right
+         uiOutput("graph_explanation")
+  )
+)
+
+# Server-side dynamic text generation
+output$graph_explanation <- renderUI({
+  req(input$forecast0)  # Ensure the forecast button has been pressed
+
+  # Retrieve the selected inputs
+  store <- input$storenum0
+  horiz <- input$horizon0
+
+  # Generate dynamic explanation text
+  tagList(
+    h4("Graph Explanation"),
+    p(paste("This graph shows the sales forecast for Store", store, "over the next", horiz, "weeks.")),
+    p("The graph represents the actual and forecasted sales data, showing fluctuations in mothly sales over the observed period. There are spikes at the end of every year and a gradual decline in sales throughout the following months, suggesting periods of high demand followed by slower months. These patterns could be due to seasonal factors, promotions, or market conditions."),
+    if (input$show_ci) {
+      p("The light blue shaded area represents the 80% confidence interval of the forecast, indicating the range in which the true sales values are likely to fall.")
+    } else {
+      p("Confidence intervals are not displayed.")
+    }
+  )
+})
+```
+
+Forecast Vs Actual Sales {data-icon="fa-mouse-pointer"}
+==================================================
+
+```{r echo = FALSE}
+selectInput("storenum", label = "Select store: ",
+            choices = unique(sales$Store), selected = 1)
+
+sliderInput("weeks", label = "Select Week Range:",
+            min = 1, max = 38, value = 13, step = 1)
+ helpText("Note: The week range is limited to 39 because forecasts beyond this range may lack sufficient historical data.")
+
+actionButton("forecast", "Generate Forecast")
+```
+
+
+
+Main content
+-----------------------------------------
+### Compariosn
+    
+
+```{r echo = FALSE}
+# Plotly output
+output$plotly <- renderPlotly({
+  req(input$forecast)
+  
+  horiz <- input$weeks  # Use the slider input value directly
+  store <- input$storenum
+  
+  sales_hist <- sales %>%
+    filter(Store == store) %>%
+    subset(Week <= nweek_now - horiz)
+  
+  sales_last <- sales %>%
+    filter(Store == store) %>%
+    subset(Week > nweek_now - horiz)
+  
+  sales_hist_ts <- ts(sales_hist$Weekly_Sales, frequency = 52)
+  arima_model <- auto.arima(sales_hist_ts, seasonal.test = "seas")
+  arima_pred <- forecast(arima_model, h = horiz)
+  
+  sales_pred_eval <- data.frame(predicted = as.numeric(arima_pred$mean),
+                                actual = sales_last$Weekly_Sales,
+                                Week = sales_last$Week)
+  
+  p <- sales_pred_eval %>%
+  ggplot(aes(x = Week)) +
+  geom_line(aes(y = predicted, color = "Forecasted")) +
+  geom_line(aes(y = actual, color = "Actual")) +
+  labs(
+    title = "Comparison of Actual vs Forecasted Sales",
+    x = "Week",
+    y = "Sales",
+    color = "Legend"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", color = "darkblue"),
+    axis.title = element_text(size = 14, face = "bold", color = "darkblue"),
+    axis.text = element_text(size = 12, color = "darkblue"),
+    panel.grid.major = element_line(color = "lightgrey", linewidth = 0.5, linetype = "dashed"),
+    panel.grid.minor = element_blank(),
+    panel.background = element_rect(fill = "white", color = "white"),
+    plot.background = element_rect(fill = "white", color = "white"),
+    legend.position = "bottom",
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 10)
+  ) +
+  scale_x_continuous(breaks = seq(min(sales_pred_eval$Week), max(sales_pred_eval$Week), by = 2)) + # Adjusted to show every other week
+  scale_y_continuous(labels = scales::dollar_format(prefix = "$"))
+
+ggplotly(p)
+})
+
+plotlyOutput("plotly", height = "8000px")
+```
